@@ -107,3 +107,158 @@ prefixo `NPCName.`. O mesmo padrão pode ser usado para `ItemTooltip.`,
 Essa separação evita misturar grupos e mantém claro quais textos cada versão
 do mod pode modificar.
 
+## Gerar um cache completo
+
+Para incluir todos os itens, primeiro obtenha um ou mais arquivos JSON de
+localização inglesa que contenham as chaves vanilla e seus textos. O script
+`scripts/generate-item-cache.py` lê exclusivamente o objeto `ItemName` na
+primeira camada:
+
+```json
+{
+  "ItemName": {
+    "CopperShortsword": "Copper Shortsword"
+  }
+}
+```
+
+Execute com Python 3:
+
+```powershell
+python .\scripts\generate-item-cache.py .\caminho\en-US.json
+```
+
+Também é possível combinar vários arquivos:
+
+```powershell
+python .\scripts\generate-item-cache.py .\localization\Items.json .\localization\Legacy.json
+```
+
+Por segurança, o script preserva valores já existentes em
+`Assets/hyper_items_ptBR.json`. Chaves novas recebem temporariamente o texto
+inglês. Ele não chama APIs e não produz hypertraduções sozinho; a etapa de
+tradução deve atualizar esses valores antes de publicar o cache. Para recriar
+todos os valores a partir do inglês, use `--overwrite-existing`.
+
+Categorias irmãs como `ItemTooltip`, `NPCName` e `BuffName` são ignoradas.
+Referências puras como `{$PaintingArtist.Myhre}` são sempre mantidas em inglês.
+Em textos mistos, traduções existentes só são preservadas quando mantêm
+exatamente referências e placeholders como `{$Category.Key}`, `{0}` e
+`{^0:item;items}`; valores que corrompam esses tokens são substituídos pelo
+original inglês e produzem um aviso.
+
+## Gerar as hypertraduções localmente
+
+O script `scripts/hypertranslate-items.py` usa por padrão o modelo local
+`facebook/nllb-200-distilled-600M`. Ele não exige API key e, depois do primeiro
+download, pode funcionar offline. O modelo possui licença CC-BY-NC-4.0 e é
+destinado a pesquisa, não a produção comercial.
+
+### Preparação
+
+Use Python 3 de 64 bits. Na raiz do repositório, instale as dependências:
+
+```powershell
+python -m pip install torch transformers sentencepiece
+```
+
+O arquivo de entrada deve ser o recurso inglês extraído do Terraria e precisa
+conter `ItemName` na primeira camada. O caminho usado nos exemplos é:
+
+```text
+Localization/Terraria.Localization.Content.en-US.Items.json
+```
+
+### Conferir sem traduzir
+
+O modo `--dry-run` mostra a cadeia e a quantidade de itens sem baixar o modelo,
+alterar o cache ou executar traduções:
+
+```powershell
+python .\scripts\hypertranslate-items.py `
+  .\Localization\Terraria.Localization.Content.en-US.Items.json `
+  --provider nllb `
+  --dry-run
+```
+
+Por padrão, a cadeia contém 10 idiomas no total: nove intermediários escolhidos
+sem repetição entre 50 opções e `pt-BR` como destino final. A seleção é
+reproduzível pela semente.
+
+### Fazer um teste pequeno
+
+Antes da execução completa, traduza dois itens usando cinco idiomas:
+
+```powershell
+python .\scripts\hypertranslate-items.py `
+  .\Localization\Terraria.Localization.Content.en-US.Items.json `
+  --provider nllb `
+  --language-count 5 `
+  --limit 2
+```
+
+Na primeira execução efetiva, os arquivos do modelo serão baixados
+automaticamente pelo Hugging Face.
+
+### Traduzir todos os itens
+
+Para processar todos os itens com os 10 idiomas padrão:
+
+```powershell
+python .\scripts\hypertranslate-items.py `
+  .\Localization\Terraria.Localization.Content.en-US.Items.json `
+  --provider nllb
+```
+
+Como `nllb` é o provedor padrão, a forma curta equivalente é:
+
+```powershell
+python .\scripts\hypertranslate-items.py `
+  .\Localization\Terraria.Localization.Content.en-US.Items.json
+```
+
+No Git Bash, use barras normais e `\` para continuar uma linha:
+
+```bash
+python scripts/hypertranslate-items.py \
+  Localization/Terraria.Localization.Content.en-US.Items.json \
+  --provider nllb
+```
+
+O resultado é gravado por padrão em:
+
+```text
+Assets/hyper_items_ptBR.json
+```
+
+Depois da tradução, execute **Workshop > Develop Mods > Build + Reload** no
+tModLoader para empacotar o cache atualizado.
+
+### Opções úteis
+
+- `--language-count N`: total de idiomas da cadeia, incluindo `pt-BR`; aceita
+  valores de 2 a 51 e usa 10 por padrão.
+- `--seed TEXTO`: altera de maneira reproduzível quais idiomas serão escolhidos
+  e em qual ordem.
+- `--limit N`: processa somente os primeiros `N` candidatos.
+- `--retranslate`: refaz inclusive valores que já diferem do inglês.
+- `--output CAMINHO`: escolhe outro arquivo JSON de saída.
+- `--model MODELO`: escolhe outro checkpoint NLLB compatível.
+- `--dry-run`: apenas exibe o plano, sem carregar o modelo ou escrever arquivos.
+- `--help`: mostra todas as opções disponíveis.
+
+O cache é salvo atomicamente após cada item. Uma execução interrompida pode ser
+retomada com o mesmo comando: valores que já diferem do inglês são preservados.
+Use `--retranslate` somente quando quiser refazer traduções existentes.
+Referências puras são ignoradas, e placeholders são protegidos e validados
+entre todas as etapas. A opção `--seed` produz outra sequência de idiomas.
+
+Na primeira execução, o Hugging Face baixa aproximadamente alguns gigabytes de
+arquivos do modelo. O script usa CUDA automaticamente quando PyTorch detecta
+uma GPU NVIDIA compatível; caso contrário, usa CPU e pode demorar bastante.
+O download exige internet, mas as execuções seguintes usam o modelo armazenado
+no cache local.
+
+O provedor anterior continua disponível opcionalmente com
+`--provider google --yes`. Ele requer `GOOGLE_TRANSLATE_API_KEY` e pode gerar
+cobrança; não é necessário para o modo NLLB.
