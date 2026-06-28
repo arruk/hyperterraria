@@ -1,0 +1,17 @@
+# tModLoader build output
+bin/
+obj/
+*.tmod
+
+# IDE and editor files
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+
+# Operating system files
+Thumbs.db
+Desktop.ini
+.DS_Store
+

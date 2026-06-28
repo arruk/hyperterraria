@@ -1,0 +1,5 @@
+Substitui nomes de itens vanilla por versões hypertraduzidas em português.
+
+As traduções vêm de um cache JSON incluído no mod. Nenhuma API ou tradução
+online é usada durante o jogo.
+

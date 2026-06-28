@@ -1,0 +1,6 @@
+displayName = HyperTerraria
+author = HyperTerraria contributors
+version = 0.1.0
+side = Client
+buildIgnore = scripts/*
+
