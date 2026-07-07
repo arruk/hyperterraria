@@ -159,6 +159,12 @@ def parse_arguments() -> argparse.Namespace:
         help=f"Modelo Hugging Face usado pelo NLLB (padrão: {DEFAULT_NLLB_MODEL}).",
     )
     parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=32,
+        help="Quantidade de textos traduzidos por lote no NLLB (padrão: 32).",
+    )
+    parser.add_argument(
         "--api-key-env",
         default="GOOGLE_TRANSLATE_API_KEY",
         help="Variável com a chave, usada somente pelo provedor google.",
@@ -336,7 +342,13 @@ class NllbTranslator:
         print(f"Carregando {model_name} em {self._device}...")
         try:
             self._tokenizer = AutoTokenizer.from_pretrained(model_name)
-            self._model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+            model_options: dict[str, Any] = {}
+            if self._device.type == "cuda":
+                model_options["torch_dtype"] = torch.float16
+            self._model = AutoModelForSeq2SeqLM.from_pretrained(
+                model_name,
+                **model_options,
+            )
         except Exception as exception:
             raise ValueError(
                 f"não foi possível carregar o modelo NLLB '{model_name}': {exception}"
@@ -345,14 +357,26 @@ class NllbTranslator:
         self._model.eval()
 
     def translate(self, text: str, source_language: str, target_language: str) -> str:
+        return self.translate_many([text], source_language, target_language)[0]
+
+    def translate_many(
+        self,
+        texts: list[str],
+        source_language: str,
+        target_language: str,
+    ) -> list[str]:
+        if not texts:
+            return []
+
         source_code = NLLB_LANGUAGE_CODES[source_language]
         target_code = NLLB_LANGUAGE_CODES[target_language]
         self._tokenizer.src_lang = source_code
 
         try:
             inputs = self._tokenizer(
-                text,
+                texts,
                 return_tensors="pt",
+                padding=True,
                 truncation=True,
                 max_length=256,
             ).to(self._device)
@@ -363,16 +387,23 @@ class NllbTranslator:
                     forced_bos_token_id=target_token_id,
                     max_new_tokens=128,
                 )
-            translated = self._tokenizer.batch_decode(
+            translated = [
+                value.strip()
+                for value in self._tokenizer.batch_decode(
                 generated,
                 skip_special_tokens=True,
-            )[0].strip()
+                )
+            ]
         except Exception as exception:
             raise ValueError(
                 f"NLLB falhou em {source_language}->{target_language}: {exception}"
             ) from exception
 
-        if not translated:
+        if len(translated) != len(texts):
+            raise ValueError(
+                f"NLLB retornou {len(translated)} texto(s) para {len(texts)} entrada(s)"
+            )
+        if any(not value for value in translated):
             raise ValueError(
                 f"NLLB retornou texto vazio em {source_language}->{target_language}"
             )
@@ -412,6 +443,62 @@ def translate_text_segments(
     return "".join(parts)
 
 
+def split_translatable_segments(text: str) -> tuple[list[str | None], list[str]]:
+    parts: list[str | None] = []
+    segments: list[str] = []
+    position = 0
+
+    for match in PROTECTED_TOKEN_PATTERN.finditer(text):
+        segment = text[position : match.start()]
+        if segment.strip():
+            parts.append(None)
+            segments.append(segment)
+        else:
+            parts.append(segment)
+        parts.append(match.group(0))
+        position = match.end()
+
+    tail = text[position:]
+    if tail.strip():
+        parts.append(None)
+        segments.append(tail)
+    else:
+        parts.append(tail)
+
+    return parts, segments
+
+
+def translate_text_segments_many(
+    texts: list[str],
+    source_language: str,
+    target_language: str,
+    translate_function: Callable[[list[str], str, str], list[str]],
+) -> list[str]:
+    templates: list[list[str | None]] = []
+    all_segments: list[str] = []
+
+    for text in texts:
+        parts, segments = split_translatable_segments(text)
+        templates.append(parts)
+        all_segments.extend(segments)
+
+    translated_segments = translate_function(
+        all_segments,
+        source_language,
+        target_language,
+    )
+    translated_iter = iter(translated_segments)
+    results: list[str] = []
+
+    for parts in templates:
+        rebuilt: list[str] = []
+        for part in parts:
+            rebuilt.append(next(translated_iter) if part is None else part)
+        results.append("".join(rebuilt))
+
+    return results
+
+
 def hypertranslate(
     english_value: str,
     chain: list[str],
@@ -441,6 +528,43 @@ def hypertranslate(
     return current_text
 
 
+def hypertranslate_many(
+    english_values: list[str],
+    chain: list[str],
+    translate_function: Callable[[list[str], str, str], list[str]],
+    delay: float,
+) -> list[str]:
+    expected_tokens = [protected_tokens(value) for value in english_values]
+    current_texts = english_values
+    current_language = SOURCE_LANGUAGE
+
+    for target_language in chain:
+        current_texts = translate_text_segments_many(
+            current_texts,
+            current_language,
+            target_language,
+            translate_function,
+        )
+        for current_text, expected in zip(current_texts, expected_tokens):
+            if protected_tokens(current_text) != expected:
+                raise ValueError(
+                    f"tokens protegidos divergiram em "
+                    f"{current_language}->{target_language}"
+                )
+        current_language = target_language
+        if delay > 0:
+            time.sleep(delay)
+
+    return current_texts
+
+
+def batched(values: list[tuple[str, str]], batch_size: int) -> list[list[tuple[str, str]]]:
+    return [
+        values[index : index + batch_size]
+        for index in range(0, len(values), batch_size)
+    ]
+
+
 def main() -> int:
     arguments = parse_arguments()
     try:
@@ -450,6 +574,8 @@ def main() -> int:
             raise ValueError("--retries deve ser pelo menos 1")
         if arguments.limit is not None and arguments.limit < 1:
             raise ValueError("--limit deve ser pelo menos 1")
+        if arguments.batch_size < 1:
+            raise ValueError("--batch-size deve ser pelo menos 1")
 
         chain = select_language_chain(arguments.language_count, arguments.seed)
         source_items = load_source_items(arguments.source)
@@ -519,20 +645,68 @@ def main() -> int:
                 output[key] = english_value
 
         failures = 0
-        for index, (key, english_value) in enumerate(candidates, start=1):
-            try:
-                translated = hypertranslate(
-                    english_value,
-                    chain,
-                    translate_function,
-                    arguments.delay,
-                )
-                output[key] = translated
-                write_json_atomic(arguments.output, output)
-                print(f"[{index}/{len(candidates)}] {key}: {translated}")
-            except ValueError as exception:
-                failures += 1
-                print(f"[{index}/{len(candidates)}] ERRO {key}: {exception}", file=sys.stderr)
+        if arguments.provider == "nllb" and arguments.batch_size > 1:
+            for batch_index, batch in enumerate(
+                batched(candidates, arguments.batch_size),
+                start=1,
+            ):
+                first_index = (batch_index - 1) * arguments.batch_size + 1
+                keys = [key for key, _ in batch]
+                english_values = [english_value for _, english_value in batch]
+                try:
+                    translated_values = hypertranslate_many(
+                        english_values,
+                        chain,
+                        nllb.translate_many,
+                        arguments.delay,
+                    )
+                    for offset, (key, translated) in enumerate(
+                        zip(keys, translated_values),
+                        start=0,
+                    ):
+                        index = first_index + offset
+                        output[key] = translated
+                        print(f"[{index}/{len(candidates)}] {key}: {translated}")
+                    write_json_atomic(arguments.output, output)
+                except ValueError as batch_exception:
+                    print(
+                        f"Lote {batch_index} falhou; tentando item por item: "
+                        f"{batch_exception}",
+                        file=sys.stderr,
+                    )
+                    for offset, (key, english_value) in enumerate(batch, start=0):
+                        index = first_index + offset
+                        try:
+                            translated = hypertranslate(
+                                english_value,
+                                chain,
+                                nllb.translate,
+                                arguments.delay,
+                            )
+                            output[key] = translated
+                            write_json_atomic(arguments.output, output)
+                            print(f"[{index}/{len(candidates)}] {key}: {translated}")
+                        except ValueError as exception:
+                            failures += 1
+                            print(
+                                f"[{index}/{len(candidates)}] ERRO {key}: {exception}",
+                                file=sys.stderr,
+                            )
+        else:
+            for index, (key, english_value) in enumerate(candidates, start=1):
+                try:
+                    translated = hypertranslate(
+                        english_value,
+                        chain,
+                        translate_function,
+                        arguments.delay,
+                    )
+                    output[key] = translated
+                    write_json_atomic(arguments.output, output)
+                    print(f"[{index}/{len(candidates)}] {key}: {translated}")
+                except ValueError as exception:
+                    failures += 1
+                    print(f"[{index}/{len(candidates)}] ERRO {key}: {exception}", file=sys.stderr)
 
         print(f"Cache gravado em: {arguments.output}")
         print(f"Falhas: {failures}")
