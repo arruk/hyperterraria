@@ -9,6 +9,7 @@ obj/
 .idea/
 *.user
 *.suo
+*~
 
 # Operating system files
 Thumbs.db
