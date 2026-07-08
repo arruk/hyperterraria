@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Hypertraduz nomes de itens vanilla usando Google Cloud Translation - Basic.
+Hypertraduz nomes vanilla usando Google Cloud Translation - Basic.
 
 O script roda somente durante a preparação do cache. O mod não contém a chave,
 não chama APIs e não traduz textos durante o jogo.
@@ -90,12 +90,16 @@ NLLB_LANGUAGE_CODES: dict[str, str] = {
     "mr": "mar_Deva",
 }
 DEFAULT_NLLB_MODEL = "facebook/nllb-200-distilled-600M"
-ITEM_PREFIX = "ItemName."
+SOURCE_SECTIONS: tuple[str, ...] = ("ItemName", "NPCName")
+SOURCE_PREFIXES: tuple[str, ...] = tuple(f"{section}." for section in SOURCE_SECTIONS)
 API_URL = "https://translation.googleapis.com/language/translate/v2"
-DEFAULT_SOURCE = (
+DEFAULT_SOURCES = (
     Path(__file__).resolve().parent.parent
     / "Localization"
-    / "Terraria.Localization.Content.en-US.Items.json"
+    / "Terraria.Localization.Content.en-US.Items.json",
+    Path(__file__).resolve().parent.parent
+    / "Localization"
+    / "Terraria.Localization.Content.en_US.NPCs.json",
 )
 DEFAULT_OUTPUT = (
     Path(__file__).resolve().parent.parent
@@ -116,14 +120,17 @@ PROTECTED_TOKEN_PATTERN = re.compile(
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Hypertraduz ItemName.* em múltiplos idiomas e termina em pt-BR."
+        description="Hypertraduz ItemName.* e NPCName.* em multiplos idiomas e termina em pt-BR."
     )
     parser.add_argument(
-        "source",
-        nargs="?",
+        "sources",
+        nargs="*",
         type=Path,
-        default=DEFAULT_SOURCE,
-        help=f"JSON inglês original (padrão: {DEFAULT_SOURCE}).",
+        default=list(DEFAULT_SOURCES),
+        help=(
+            "JSON(s) ingles(es) originais. Por padrao usa os arquivos vanilla "
+            f"de itens e NPCs: {', '.join(str(path) for path in DEFAULT_SOURCES)}."
+        ),
     )
     parser.add_argument(
         "-o",
@@ -184,7 +191,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--limit",
         type=int,
-        help="Processa no máximo esta quantidade de itens; útil para testes.",
+        help="Processa no máximo esta quantidade de entradas; útil para testes.",
     )
     parser.add_argument(
         "--retranslate",
@@ -219,24 +226,44 @@ def load_json(path: Path) -> Any:
         raise ValueError(f"não foi possível ler {path}: {exception}") from exception
 
 
-def load_source_items(path: Path) -> dict[str, str]:
-    document = load_json(path)
-    if not isinstance(document, dict) or not isinstance(document.get("ItemName"), dict):
-        raise ValueError("o JSON de origem precisa conter ItemName na primeira camada")
+def load_source_entries(paths: list[Path]) -> dict[str, str]:
+    entries: dict[str, str] = {}
 
-    items: dict[str, str] = {}
-    for internal_name, value in document["ItemName"].items():
-        if (
-            isinstance(internal_name, str)
-            and "." not in internal_name
-            and isinstance(value, str)
-            and value.strip()
-        ):
-            items[f"{ITEM_PREFIX}{internal_name}"] = value
+    for path in paths:
+        document = load_json(path)
+        if not isinstance(document, dict):
+            raise ValueError(f"a raiz do JSON precisa ser um objeto: {path}")
 
-    if not items:
-        raise ValueError("nenhum nome foi encontrado no objeto ItemName")
-    return items
+        found_in_file = 0
+        for section in SOURCE_SECTIONS:
+            section_values = document.get(section)
+            if not isinstance(section_values, dict):
+                continue
+
+            found_in_section = 0
+            for internal_name, value in section_values.items():
+                if (
+                    isinstance(internal_name, str)
+                    and "." not in internal_name
+                    and isinstance(value, str)
+                    and value.strip()
+                ):
+                    entries[f"{section}.{internal_name}"] = value
+                    found_in_section += 1
+
+            found_in_file += found_in_section
+            print(f"{path}: {found_in_section} chave(s) {section}.* encontrada(s)")
+
+        if found_in_file == 0:
+            expected = ", ".join(SOURCE_SECTIONS)
+            raise ValueError(
+                f"o arquivo não contém nenhuma seção suportada ({expected}): {path}"
+            )
+
+    if not entries:
+        expected = ", ".join(f"{section}.*" for section in SOURCE_SECTIONS)
+        raise ValueError(f"nenhuma chave {expected} foi encontrada")
+    return entries
 
 
 def load_output(path: Path) -> dict[str, str]:
@@ -249,7 +276,7 @@ def load_output(path: Path) -> dict[str, str]:
         key: value
         for key, value in document.items()
         if isinstance(key, str)
-        and key.startswith(ITEM_PREFIX)
+        and key.startswith(SOURCE_PREFIXES)
         and isinstance(value, str)
         and value.strip()
     }
@@ -578,12 +605,12 @@ def main() -> int:
             raise ValueError("--batch-size deve ser pelo menos 1")
 
         chain = select_language_chain(arguments.language_count, arguments.seed)
-        source_items = load_source_items(arguments.source)
+        source_entries = load_source_entries(arguments.sources)
         output = load_output(arguments.output)
 
         candidates = [
             (key, english_value)
-            for key, english_value in sorted(source_items.items())
+            for key, english_value in sorted(source_entries.items())
             if not is_reference_only(english_value)
             and (
                 arguments.retranslate
@@ -601,7 +628,7 @@ def main() -> int:
             sum(len(value) for _, value in candidates) * len(chain)
         )
         print(f"Cadeia: {SOURCE_LANGUAGE} -> {' -> '.join(chain)}")
-        print(f"Itens candidatos: {len(candidates)}")
+        print(f"Entradas candidatas: {len(candidates)}")
         print(f"Provedor: {arguments.provider}")
         if arguments.provider == "google":
             print(f"Requisições estimadas: {estimated_requests}")
@@ -638,8 +665,8 @@ def main() -> int:
                     arguments.retries,
                 )
 
-        # Garante que referências e itens ainda ausentes também façam parte do cache.
-        for key, english_value in source_items.items():
+        # Garante que referencias e entradas ausentes tambem facam parte do cache.
+        for key, english_value in source_entries.items():
             output.setdefault(key, english_value)
             if is_reference_only(english_value):
                 output[key] = english_value

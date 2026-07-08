@@ -10,16 +10,16 @@ using Terraria.ModLoader;
 namespace HyperTerraria.Systems;
 
 /// <summary>
-/// Carrega traduções previamente geradas e as aplica a nomes de itens vanilla.
+/// Carrega traduções previamente geradas e as aplica a nomes vanilla.
 /// Não há acesso à rede nem tradução em tempo real.
 /// </summary>
 public sealed class HyperItemTranslationSystem : ModSystem
 {
 	private const string CachePath = "Assets/hyper_items_ptBR.json";
-	private const string ItemNamePrefix = "ItemName.";
+	private static readonly string[] SupportedPrefixes = { "ItemName.", "NPCName." };
 
-	private static readonly Regex ItemNamePattern = new(
-		@"^ItemName\.",
+	private static readonly Regex SupportedNamePattern = new(
+		@"^(ItemName|NPCName)\.",
 		RegexOptions.Compiled | RegexOptions.CultureInvariant
 	);
 
@@ -50,7 +50,7 @@ public sealed class HyperItemTranslationSystem : ModSystem
 	{
 		if (!ModContent.GetInstance<HyperTerrariaConfig>().EnableItemNames)
 		{
-			Mod.Logger.Info("Substituição de nomes de itens desativada na configuração.");
+			Mod.Logger.Info("Substituição de nomes vanilla desativada na configuração.");
 			return;
 		}
 
@@ -63,7 +63,7 @@ public sealed class HyperItemTranslationSystem : ModSystem
 		{
 			// FindAll garante que apenas chaves já carregadas pelo Terraria sejam
 			// consideradas; entradas desconhecidas do JSON são simplesmente ignoradas.
-			foreach (LocalizedText localizedText in LanguageManager.Instance.FindAll(ItemNamePattern))
+			foreach (LocalizedText localizedText in LanguageManager.Instance.FindAll(SupportedNamePattern))
 			{
 				if (!_translations.TryGetValue(localizedText.Key, out string? translatedValue))
 					continue;
@@ -84,14 +84,14 @@ public sealed class HyperItemTranslationSystem : ModSystem
 				}
 			}
 
-			Mod.Logger.Info($"{changed} nome(s) de item hypertraduzido(s).");
+			Mod.Logger.Info($"{changed} nome(s) vanilla hypertraduzido(s).");
 		}
 		catch (Exception exception)
 		{
 			// Uma alteração interna no sistema de localização não deve impedir o
 			// carregamento do jogo ou dos demais mods.
 			Mod.Logger.Error(
-				$"Falha ao procurar localizações ItemName.*: {UnwrapMessage(exception)}"
+				$"Falha ao procurar localizações suportadas: {UnwrapMessage(exception)}"
 			);
 		}
 	}
@@ -133,16 +133,16 @@ public sealed class HyperItemTranslationSystem : ModSystem
 
 			foreach ((string key, string? value) in parsed)
 			{
-				if (!key.StartsWith(ItemNamePrefix, StringComparison.Ordinal))
-				continue;
+				if (!IsSupportedLocalizationKey(key))
+					continue;
 
 				if (string.IsNullOrWhiteSpace(value))
-				continue;
+					continue;
 
 				result[key] = value;
 			}
 
-			Mod.Logger.Info($"{result.Count} tradução(ões) ItemName.* carregada(s) do cache.");
+			Mod.Logger.Info($"{result.Count} tradução(ões) carregada(s) do cache.");
 		}
 		catch (Exception exception)
 		{
@@ -160,5 +160,16 @@ public sealed class HyperItemTranslationSystem : ModSystem
 		exception is TargetInvocationException { InnerException: not null }
 			? exception.InnerException.Message
 			: exception.Message;
+
+	private static bool IsSupportedLocalizationKey(string key)
+	{
+		foreach (string prefix in SupportedPrefixes)
+		{
+			if (key.StartsWith(prefix, StringComparison.Ordinal))
+				return true;
+		}
+
+		return false;
+	}
 }
 

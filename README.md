@@ -57,7 +57,7 @@ externas ou chaves secretas.
 3. Encontre `HyperTerraria` e escolha **Build + Reload**.
 4. Volte ao menu de Workshop, abra **Manage Mods**, ative `HyperTerraria` e
    selecione **Reload Mods** quando solicitado.
-5. Entre em um mundo e confira os nomes dos itens presentes no cache.
+5. Entre em um mundo e confira os nomes de itens e NPCs presentes no cache.
 6. Em **Settings > Mod Configuration > HyperTerraria**, use:
    - `EnableItemNames`: liga ou desliga a substituição de nomes.
    - `LogChangedItems`: registra cada substituição no log do tModLoader.
@@ -72,12 +72,13 @@ Edite `Assets/hyper_items_ptBR.json` mantendo um objeto JSON no formato:
 ```json
 {
   "ItemName.CopperShortsword": "Espada curta de cobre que viajou demais",
-  "ItemName.IronPickaxe": "Picareta de ferro internacionalmente confusa"
+  "ItemName.IronPickaxe": "Picareta de ferro internacionalmente confusa",
+  "NPCName.BlueSlime": "Gosma azul que esqueceu o passaporte"
 }
 ```
 
-As chaves precisam corresponder às chaves vanilla e começar com `ItemName.`.
-Valores vazios e outros prefixos são ignorados. Salve o arquivo em UTF-8 e use
+As chaves precisam corresponder às chaves vanilla e começar com `ItemName.` ou
+`NPCName.`. Valores vazios e outros prefixos são ignorados. Salve o arquivo em UTF-8 e use
 **Build + Reload** novamente. JSON não aceita duas entradas com a mesma chave;
 também é recomendável não deixar vírgula depois da última entrada.
 
@@ -85,7 +86,7 @@ também é recomendável não deixar vírgula depois da última entrada.
 
 Durante `OnModLoad`, o sistema desserializa o cache empacotado. Depois que as
 localizações do jogo são carregadas, `OnLocalizationsLoaded` procura chaves
-`ItemName.*`, encontra as que também estão no cache e chama por reflection o
+`ItemName.*` e `NPCName.*`, encontra as que também estão no cache e chama por reflection o
 método não público `LocalizedText.SetValue`. Essa reflection é necessária
 porque textos vanilla não expõem um setter público.
 
@@ -94,9 +95,7 @@ gameplay ou arquivos da instalação do Terraria.
 
 ## Expansão futura
 
-Para adicionar NPCs e bosses, crie caches e sistemas equivalentes para o
-prefixo `NPCName.`. O mesmo padrão pode ser usado para `ItemTooltip.`,
-`BuffName.` e outros grupos:
+O mesmo padrão pode ser expandido para `ItemTooltip.`, `BuffName.` e outros grupos:
 
 1. carregue apenas entradas do prefixo permitido;
 2. encontre apenas localizações já registradas pelo Terraria;
@@ -162,23 +161,22 @@ Use Python 3 de 64 bits. Na raiz do repositório, instale as dependências:
 python -m pip install torch transformers sentencepiece
 ```
 
-O arquivo de entrada deve ser o recurso inglês extraído do Terraria e precisa
-conter `ItemName` na primeira camada. O caminho usado nos exemplos é:
+Os arquivos de entrada devem ser recursos ingleses extraídos do Terraria e
+podem conter `ItemName` ou `NPCName` na primeira camada. Sem argumentos, o
+script usa os caminhos:
 
 ```text
 Localization/Terraria.Localization.Content.en-US.Items.json
+Localization/Terraria.Localization.Content.en_US.NPCs.json
 ```
 
 ### Conferir sem traduzir
 
-O modo `--dry-run` mostra a cadeia e a quantidade de itens sem baixar o modelo,
+O modo `--dry-run` mostra a cadeia e a quantidade de entradas sem baixar o modelo,
 alterar o cache ou executar traduções:
 
 ```powershell
-python .\scripts\hypertranslate-items.py `
-  .\Localization\Terraria.Localization.Content.en-US.Items.json `
-  --provider nllb `
-  --dry-run
+python .\scripts\hypertranslate-items.py --provider nllb --dry-run
 ```
 
 Por padrão, a cadeia contém 10 idiomas no total: nove intermediários escolhidos
@@ -187,11 +185,10 @@ reproduzível pela semente.
 
 ### Fazer um teste pequeno
 
-Antes da execução completa, traduza dois itens usando cinco idiomas:
+Antes da execução completa, traduza duas entradas usando cinco idiomas:
 
 ```powershell
 python .\scripts\hypertranslate-items.py `
-  .\Localization\Terraria.Localization.Content.en-US.Items.json `
   --provider nllb `
   --language-count 5 `
   --limit 2
@@ -200,29 +197,24 @@ python .\scripts\hypertranslate-items.py `
 Na primeira execução efetiva, os arquivos do modelo serão baixados
 automaticamente pelo Hugging Face.
 
-### Traduzir todos os itens
+### Traduzir todos os nomes
 
-Para processar todos os itens com os 10 idiomas padrão:
+Para processar todos os nomes com os 10 idiomas padrão:
 
 ```powershell
-python .\scripts\hypertranslate-items.py `
-  .\Localization\Terraria.Localization.Content.en-US.Items.json `
-  --provider nllb
+python .\scripts\hypertranslate-items.py --provider nllb
 ```
 
 Como `nllb` é o provedor padrão, a forma curta equivalente é:
 
 ```powershell
-python .\scripts\hypertranslate-items.py `
-  .\Localization\Terraria.Localization.Content.en-US.Items.json
+python .\scripts\hypertranslate-items.py
 ```
 
-No Git Bash, use barras normais e `\` para continuar uma linha:
+No Git Bash, use:
 
 ```bash
-python scripts/hypertranslate-items.py \
-  Localization/Terraria.Localization.Content.en-US.Items.json \
-  --provider nllb
+python scripts/hypertranslate-items.py --provider nllb
 ```
 
 O resultado é gravado por padrão em:
